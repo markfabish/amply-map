@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Amply Haus – Interactive Coverage Map</title>
+  <link rel="preconnect" href="https://unpkg.com"/>
+  <style>
+    :root{
+      --bg:#0b0b0f; /* near-black matches your site */
+      --text:#ffffff;
+      --pink:#ff3ea5;
+      --purple:#7b61ff;
+      --grey:#3b3b45;
+      --accent1:#ff7a18; /* for gradient accent */
+    }
+    html,body{margin:0;height:100%;background:var(--bg);color:var(--text);font-family:Inter,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif}
+    .wrap{max-width:1100px;margin:0 auto;padding:24px}
+    h1{font-weight:800;letter-spacing:.4px;margin:0 0 8px}
+    p.sub{opacity:.85;margin:.25rem 0 1rem}
+    .map-card{position:relative;background:#121219;border:1px solid #1e1e28;border-radius:16px;box-shadow:0 10px 30px rgba(0,0,0,.35);overflow:hidden}
+    .legend{display:flex;gap:16px;flex-wrap:wrap;align-items:center;padding:12px 16px;border-top:1px solid #1e1e28;background:#0e0e15}
+    .legend .item{display:flex;align-items:center;gap:8px;font-size:14px}
+    .swatch{width:14px;height:14px;border-radius:3px;display:inline-block;border:1px solid rgba(255,255,255,.15)}
+    .swatch.pink{background:var(--pink)}
+    .swatch.purple{background:var(--purple)}
+    .swatch.grey{background:var(--grey)}
+    .map{width:100%;height:64vh;min-height:420px}
+
+    /* Tooltip */
+    .tooltip{position:absolute;pointer-events:none;background:#141420;border:1px solid #2a2a3a;color:#fff;padding:8px 10px;border-radius:8px;font-size:13px;box-shadow:0 6px 20px rgba(0,0,0,.35);opacity:0;transform:translate(-50%,-120%)}
+    .tooltip .name{font-weight:700}
+    .footer-note{opacity:.7;font-size:12px;margin-top:10px}
+    .cta{display:inline-block;margin-top:14px;padding:10px 14px;border-radius:999px;font-weight:700;text-decoration:none;color:#111;background:linear-gradient(90deg,var(--pink),var(--accent1));}
+    .cta:hover{filter:brightness(1.05)}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Market Coverage</h1>
+    <p class="sub">Hover to see coverage by country. Click any highlighted country to learn more or link to a case study.</p>
+
+    <div class="map-card">
+      <div id="map" class="map"></div>
+      <div class="legend">
+        <div class="item"><span class="swatch pink"></span> On-the-ground support</div>
+        <div class="item"><span class="swatch purple"></span> Press release servicing</div>
+        <div class="item"><span class="swatch grey"></span> Other markets</div>
+      </div>
+      <div id="tooltip" class="tooltip"></div>
+    </div>
+
+    <p class="footer-note">Want a different colour scheme or categories? Edit the lists in the code below (search for <code>coverageByISO</code>).</p>
+    <a class="cta" href="#" onclick="alert('Embed instructions are included when you copy this file into your site. Host the HTML, then embed as an iFrame in Canva.');return false;">How to Embed</a>
+  </div>
+
+  <!-- D3 + TopoJSON from CDNs -->
+  <script src="https://unpkg.com/d3@7/dist/d3.min.js"></script>
+  <script src="https://unpkg.com/topojson-client@3"></script>
+  <script>
+    // === 1) Define coverage by ISO A3 ===
+    // PINK: on-the-ground support
+    const PINK = new Set([
+      'GBR','USA','MEX','BRA','ARG','DEU','FRA','ESP','ITA','SWE','NOR','DNK','NLD','BEL','POL','JPN','AUS','NZL','CHN','THA','IDN','PHL','MYS','VNM','SGP','KHM','LAO','MMR','BRN','TLS'
+    ]);
+    // PURPLE: press release servicing
+    const PURPLE = new Set([
+      'SAU','ARE','ZAF','NGA','GHA','KEN','KOR','LUX','UKR','LTU','CZE','LVA','HUN','ROU','SVK','SVN'
+    ]);
+    // map lookup
+    function category(iso){
+      if(PINK.has(iso)) return 'pink';
+      if(PURPLE.has(iso)) return 'purple';
+      return 'grey';
+    }
+
+    // Optional per-country links for clicks (add/remove as needed)
+    const links = {
+      GBR: 'https://amplyhaus.com/case-studies/uk',
+      USA: 'https://amplyhaus.com/case-studies/us',
+      DEU: 'https://amplyhaus.com/case-studies/germany'
+    };
+
+    // === 2) Build responsive SVG map ===
+    const container = d3.select('#map');
+    const width = container.node().clientWidth;
+    const height = container.node().clientHeight;
+
+    const svg = container.append('svg')
+      .attr('viewBox', `0 0 ${width} ${height}`)
+      .attr('preserveAspectRatio','xMidYMid meet');
+
+    const g = svg.append('g');
+
+    const projection = d3.geoNaturalEarth1()
+      .fitSize([width, height], {type: 'Sphere'});
+    const path = d3.geoPath(projection);
+
+    // Graticule (optional subtle grid)
+    const graticule = d3.geoGraticule();
+    g.append('path')
+      .attr('d', path({type:'Sphere'}))
+      .attr('fill', '#0e0e15');
+    g.append('path')
+      .attr('d', path(graticule()))
+      .attr('stroke', '#1a1a26')
+      .attr('stroke-opacity', .25)
+      .attr('fill','none');
+
+    const tooltip = d3.select('#tooltip');
+
+    // Load world topology and render
+    fetch('https://unpkg.com/world-atlas@2/countries-110m.json')
+      .then(r=>r.json())
+      .then(world => {
+        const countries = topojson.feature(world, world.objects.countries);
+
+        // Attempt to attach name + ISO A3 from natural earth: we will pull names from an ancillary file if present; if not, use d3 to map by id via ISO-3166 list below
+        // The 110m topo contains numeric ids; we'll map those to ISO A3 with a helper table.
+
+        const idToISO = new Map([
+          // Minimal mapping for countries we style; the rest render as grey by default. (Id values are for 110m v2.)
+          // If any country appears grey unexpectedly, add its {id, ISO} here.
+          [826,'GBR'],[840,'USA'],[484,'MEX'],[76,'BRA'],[32,'ARG'],[276,'DEU'],[250,'FRA'],[724,'ESP'],[380,'ITA'],[752,'SWE'],[578,'NOR'],[208,'DNK'],[528,'NLD'],[56,'BEL'],[616,'POL'],[392,'JPN'],[36,'AUS'],[554,'NZL'],[156,'CHN'],[764,'THA'],[360,'IDN'],[608,'PHL'],[458,'MYS'],[704,'VNM'],[702,'SGP'],[116,'KHM'],[418,'LAO'],[104,'MMR'],[96,'BRN'],[626,'TLS'],
+          [682,'SAU'],[784,'ARE'],[710,'ZAF'],[566,'NGA'],[288,'GHA'],[404,'KEN'],[410,'KOR'],[442,'LUX'],[804,'UKR'],[440,'LTU'],[203,'CZE'],[428,'LVA'],[348,'HUN'],[642,'ROU'],[703,'SVK'],[705,'SVN']
+        ]);
+
+        // Names by ISO (fallback). You can edit these labels if needed.
+        const isoToName = new Map(Object.entries({
+          GBR:'United Kingdom', USA:'United States', MEX:'Mexico', BRA:'Brazil', ARG:'Argentina', DEU:'Germany', FRA:'France', ESP:'Spain', ITA:'Italy', SWE:'Sweden', NOR:'Norway', DNK:'Denmark', NLD:'Netherlands', BEL:'Belgium', POL:'Poland', JPN:'Japan', AUS:'Australia', NZL:'New Zealand', CHN:'China', THA:'Thailand', IDN:'Indonesia', PHL:'Philippines', MYS:'Malaysia', VNM:'Vietnam', SGP:'Singapore', KHM:'Cambodia', LAO:'Laos', MMR:'Myanmar', BRN:'Brunei', TLS:'East Timor',
+          SAU:'Saudi Arabia', ARE:'United Arab Emirates', ZAF:'South Africa', NGA:'Nigeria', GHA:'Ghana', KEN:'Kenya', KOR:'South Korea', LUX:'Luxembourg', UKR:'Ukraine', LTU:'Lithuania', CZE:'Czech Republic', LVA:'Latvia', HUN:'Hungary', ROU:'Romania', SVK:'Slovakia', SVN:'Slovenia'
+        }));
+
+        g.selectAll('path.country')
+          .data(countries.features)
+          .join('path')
+          .attr('class','country')
+          .attr('d', path)
+          .attr('fill', d => {
+            const iso = idToISO.get(d.id) || d.properties.iso_a3 || 'OTHER';
+            const cat = category(iso);
+            return cat==='pink' ? getCSS('--pink') : cat==='purple' ? getCSS('--purple') : getCSS('--grey');
+          })
+          .attr('stroke', '#0d0d14')
+          .attr('stroke-width', .6)
+          .on('mousemove', (event,d) => {
+            const iso = idToISO.get(d.id) || d.properties.iso_a3 || 'OTHER';
+            const name = isoToName.get(iso) || d.properties.name || 'Unknown';
+            const cat = category(iso);
+            tooltip
+              .style('opacity', 1)
+              .style('left', (event.offsetX + 10) + 'px')
+              .style('top', (event.offsetY - 10) + 'px')
+              .html(`<div class="name">${name}</div><div>${labelFor(cat)}</div>`);
+          })
+          .on('mouseleave', () => tooltip.style('opacity',0))
+          .on('click', (event,d)=>{
+            const iso = idToISO.get(d.id) || d.properties.iso_a3 || 'OTHER';
+            const url = links[iso];
+            if(url) window.open(url,'_blank');
+          });
+
+        // Resize on container change
+        addEventListener('resize', () => {
+          const w = container.node().clientWidth;
+          const h = container.node().clientHeight;
+          svg.attr('viewBox', `0 0 ${w} ${h}`);
+          projection.fitSize([w,h], {type:'Sphere'});
+          g.selectAll('path.country').attr('d', path);
+          g.selectAll('path').filter((d,i)=>i<2).attr('d', (d,i)=> i===0 ? path({type:'Sphere'}) : path(graticule()));
+        });
+      });
+
+    function getCSS(varName){
+      return getComputedStyle(document.documentElement).getPropertyValue(varName) || '#888';
+    }
+    function labelFor(cat){
+      if(cat==='pink') return 'On-the-ground support';
+      if(cat==='purple') return 'Press release servicing';
+      return 'Other markets';
+    }
+  </script>
+</body>
+</html>
